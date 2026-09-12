@@ -13,7 +13,7 @@ function setRefreshCookie(res: import("express").Response, token: string) {
   res.cookie(config.cookie.name, token, {
     httpOnly: true, // never readable from JS — mitigates XSS token theft
     secure: config.cookie.secure,
-    sameSite: "lax",
+    sameSite: config.nodeEnv === "production" ? "none" : "lax",
     maxAge: config.jwt.refreshTtlDays * 24 * 60 * 60 * 1000,
     path: "/api/auth",
   });
