@@ -9,7 +9,9 @@ export interface AccessTokenPayload {
 }
 
 export function signAccessToken(payload: AccessTokenPayload): string {
-  return jwt.sign(payload, config.jwt.accessSecret, { expiresIn: config.jwt.accessTtl });
+  return jwt.sign(payload, config.jwt.accessSecret, {
+  expiresIn: config.jwt.accessTtl as import("jsonwebtoken").SignOptions["expiresIn"],
+});
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
