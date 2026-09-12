@@ -1,0 +1,165 @@
+// ---------------------------------------------------------------------------
+// Agency Dashboard — Prisma schema
+//
+// Indexing decisions (explained further in README):
+//  - Every foreign key gets an index (Prisma adds these automatically, but we
+//    make them explicit where they matter for query patterns).
+//  - Task(status), Task(priority), Task(dueDate) are indexed individually and
+//    combined with projectId, because the task list is filtered by status,
+//    priority and due-date range constantly (dashboards + /tasks?query).
+//  - Task(assignedToId, status) is a composite index for "my tasks sorted by
+//    priority/due date" — the Developer dashboard's primary query.
+//  - ActivityLog(projectId, createdAt) supports "last N events for a
+//    project" and the "missed events since X" catch-up query in one index.
+//  - Notification(userId, isRead) supports the unread-count badge query,
+//    which runs on nearly every page load / socket reconnect.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PM
+  DEVELOPER
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  TASK_IN_REVIEW
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  createdAt    DateTime @default(now())
+
+  // Refresh tokens issued to this user (rotated, revocable, DB-backed).
+  refreshTokens   RefreshToken[]
+  managedProjects Project[]      @relation("ProjectManager")
+  assignedTasks   Task[]         @relation("AssignedDeveloper")
+  activityEvents  ActivityLog[]  @relation("ActivityActor")
+  notifications   Notification[] @relation("NotificationRecipient")
+
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique // SHA-256 hash of the opaque refresh token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Client {
+  id           String    @id @default(uuid())
+  name         String
+  contactEmail String?
+  createdAt    DateTime  @default(now())
+  projects     Project[]
+}
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  clientId    String?
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  managerId   String
+  manager     User     @relation("ProjectManager", fields: [managerId], references: [id])
+  createdAt   DateTime @default(now())
+
+  tasks      Task[]
+  activities ActivityLog[]
+
+  @@index([managerId])
+  @@index([clientId])
+}
+
+model Task {
+  id            String     @id @default(uuid())
+  projectId     String
+  project       Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title         String
+  description   String
+  assignedToId  String
+  assignedTo    User       @relation("AssignedDeveloper", fields: [assignedToId], references: [id], onDelete: Restrict)
+  status        TaskStatus @default(TODO)
+  priority      Priority   @default(MEDIUM)
+  dueDate       DateTime
+  isOverdue     Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  activities    ActivityLog[]
+  notifications Notification[]
+
+  @@index([projectId])
+  @@index([assignedToId, status])
+  @@index([status])
+  @@index([priority])
+  @@index([dueDate])
+  @@index([isOverdue])
+}
+
+// Immutable audit trail. Rows are never edited or deleted — the feed and the
+// "catch up on what I missed" query both read straight from this table, so
+// it is the single source of truth for history (never derived after the
+// fact from Task's current state).
+model ActivityLog {
+  id        String     @id @default(uuid())
+  taskId    String
+  task      Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  projectId String
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actorId   String
+  actor     User       @relation("ActivityActor", fields: [actorId], references: [id])
+  oldStatus TaskStatus
+  newStatus TaskStatus
+  createdAt DateTime   @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([taskId])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  message   String
+  taskId    String?
+  task      Task?            @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, isRead])
+}
